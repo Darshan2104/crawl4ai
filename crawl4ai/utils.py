@@ -1,13 +1,12 @@
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup, Comment, element, Tag, NavigableString
-import html2text
 import json
 import html
 import re
 import os
 import platform
-from html2text import HTML2Text
+from .html2text import HTML2Text
 from .prompts import PROMPT_EXTRACT_BLOCKS
 from .config import *
 from pathlib import Path
@@ -61,7 +60,7 @@ def get_system_memory():
         raise OSError("Unsupported operating system")
 
 def get_home_folder():
-    home_folder = os.path.join(Path.home(), ".crawl4ai")
+    home_folder = os.path.join(os.getenv("CRAWL4_AI_BASE_DIRECTORY", os.getenv("CRAWL4_AI_BASE_DIRECTORY", Path.home())), ".crawl4ai")
     os.makedirs(home_folder, exist_ok=True)
     os.makedirs(f"{home_folder}/cache", exist_ok=True)
     os.makedirs(f"{home_folder}/models", exist_ok=True)
@@ -131,7 +130,7 @@ def split_and_parse_json_objects(json_string):
     return parsed_objects, unparsed_segments
 
 def sanitize_html(html):
-    # Replace all weird and special characters with an empty string
+    # Replace all unwanted and special characters with an empty string
     sanitized_html = html
     # sanitized_html = re.sub(r'[^\w\s.,;:!?=\[\]{}()<>\/\\\-"]', '', html)
 
@@ -179,12 +178,25 @@ def escape_json_string(s):
     
     return s
 
-class CustomHTML2Text(HTML2Text):
+class CustomHTML2Text_v0(HTML2Text):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.ignore_links = True
         self.inside_pre = False
         self.inside_code = False
+        
+        self.skip_internal_links = False
+        self.single_line_break = False
+        self.mark_code = False
+        self.include_sup_sub = False
+        self.body_width = 0
+        self.ignore_mailto_links = True
+        self.ignore_links = False
+        self.escape_backslash = False
+        self.escape_dot = False
+        self.escape_plus = False
+        self.escape_dash = False
+        self.escape_snob = False
+
 
     def handle_tag(self, tag, attrs, start):
         if tag == 'pre':
@@ -194,6 +206,10 @@ class CustomHTML2Text(HTML2Text):
             else:
                 self.o('\n```')
                 self.inside_pre = False
+        elif tag in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+            pass
+
+
         # elif tag == 'code' and not self.inside_pre:
         #     if start:
         #         if not self.inside_pre:
@@ -301,7 +317,7 @@ def get_content_of_website(url, html, word_count_threshold = MIN_WORD_THRESHOLD,
             if tag.name != 'img':
                 tag.attrs = {}
 
-        # Extract all img tgas inti [{src: '', alt: ''}]
+        # Extract all img tgas int0 [{src: '', alt: ''}]
         media = {
             'images': [],
             'videos': [],
@@ -339,7 +355,7 @@ def get_content_of_website(url, html, word_count_threshold = MIN_WORD_THRESHOLD,
                 img.decompose()
 
 
-        # Create a function that replace content of all"pre" tage with its inner text
+        # Create a function that replace content of all"pre" tag with its inner text
         def replace_pre_tags_with_text(node):
             for child in node.find_all('pre'):
                 # set child inner html to its text
@@ -502,7 +518,7 @@ def get_content_of_website_optimized(url: str, html: str, word_count_threshold: 
             current_tag = tag
             while current_tag:
                 current_tag = current_tag.parent
-                # Get the text content of the parent tag
+                # Get the text content from the parent tag
                 if current_tag:
                     text_content = current_tag.get_text(separator=' ',strip=True)
                     # Check if the text content has at least word_count_threshold
@@ -511,88 +527,88 @@ def get_content_of_website_optimized(url: str, html: str, word_count_threshold: 
             return None
 
     def process_image(img, url, index, total_images):
-            #Check if an image has valid display and inside undesired html elements
-            def is_valid_image(img, parent, parent_classes):
-                style = img.get('style', '')
-                src = img.get('src', '')
-                classes_to_check = ['button', 'icon', 'logo']
-                tags_to_check = ['button', 'input']
-                return all([
-                    'display:none' not in style,
-                    src,
-                    not any(s in var for var in [src, img.get('alt', ''), *parent_classes] for s in classes_to_check),
-                    parent.name not in tags_to_check
-                ])
+        #Check if an image has valid display and inside undesired html elements
+        def is_valid_image(img, parent, parent_classes):
+            style = img.get('style', '')
+            src = img.get('src', '')
+            classes_to_check = ['button', 'icon', 'logo']
+            tags_to_check = ['button', 'input']
+            return all([
+                'display:none' not in style,
+                src,
+                not any(s in var for var in [src, img.get('alt', ''), *parent_classes] for s in classes_to_check),
+                parent.name not in tags_to_check
+            ])
 
-            #Score an image for it's usefulness
-            def score_image_for_usefulness(img, base_url, index, images_count):
-                # Function to parse image height/width value and units
-                def parse_dimension(dimension):
-                    if dimension:
-                        match = re.match(r"(\d+)(\D*)", dimension)
-                        if match:
-                            number = int(match.group(1))
-                            unit = match.group(2) or 'px'  # Default unit is 'px' if not specified
-                            return number, unit
-                    return None, None
+        #Score an image for it's usefulness
+        def score_image_for_usefulness(img, base_url, index, images_count):
+            # Function to parse image height/width value and units
+            def parse_dimension(dimension):
+                if dimension:
+                    match = re.match(r"(\d+)(\D*)", dimension)
+                    if match:
+                        number = int(match.group(1))
+                        unit = match.group(2) or 'px'  # Default unit is 'px' if not specified
+                        return number, unit
+                return None, None
 
-                # Fetch image file metadata to extract size and extension
-                def fetch_image_file_size(img, base_url):
-                    #If src is relative path construct full URL, if not it may be CDN URL
-                    img_url = urljoin(base_url,img.get('src'))
-                    try:
-                        response = requests.head(img_url)
-                        if response.status_code == 200:
-                            return response.headers.get('Content-Length',None)
-                        else:
-                            print(f"Failed to retrieve file size for {img_url}")
-                            return None
-                    except InvalidSchema as e:
+            # Fetch image file metadata to extract size and extension
+            def fetch_image_file_size(img, base_url):
+                #If src is relative path construct full URL, if not it may be CDN URL
+                img_url = urljoin(base_url,img.get('src'))
+                try:
+                    response = requests.head(img_url)
+                    if response.status_code == 200:
+                        return response.headers.get('Content-Length',None)
+                    else:
+                        print(f"Failed to retrieve file size for {img_url}")
                         return None
-                    finally:
-                        return
+                except InvalidSchema as e:
+                    return None
+                finally:
+                    return
 
-                image_height = img.get('height')
-                height_value, height_unit = parse_dimension(image_height)
-                image_width =  img.get('width')
-                width_value, width_unit = parse_dimension(image_width)
-                image_size = 0 #int(fetch_image_file_size(img,base_url) or 0)
-                image_format = os.path.splitext(img.get('src',''))[1].lower()
-                # Remove . from format
-                image_format = image_format.strip('.')
-                score = 0
-                if height_value:
-                    if height_unit == 'px' and height_value > 150:
-                        score += 1
-                    if height_unit in ['%','vh','vmin','vmax'] and height_value >30:
-                        score += 1
-                if width_value:
-                    if width_unit == 'px' and width_value > 150:
-                        score += 1
-                    if width_unit in ['%','vh','vmin','vmax'] and width_value >30:
-                        score += 1
-                if image_size > 10000:
+            image_height = img.get('height')
+            height_value, height_unit = parse_dimension(image_height)
+            image_width =  img.get('width')
+            width_value, width_unit = parse_dimension(image_width)
+            image_size = 0 #int(fetch_image_file_size(img,base_url) or 0)
+            image_format = os.path.splitext(img.get('src',''))[1].lower()
+            # Remove . from format
+            image_format = image_format.strip('.')
+            score = 0
+            if height_value:
+                if height_unit == 'px' and height_value > 150:
                     score += 1
-                if img.get('alt') != '':
-                    score+=1
-                if any(image_format==format for format in ['jpg','png','webp']):
-                    score+=1
-                if index/images_count<0.5:
-                    score+=1
-                return score
+                if height_unit in ['%','vh','vmin','vmax'] and height_value >30:
+                    score += 1
+            if width_value:
+                if width_unit == 'px' and width_value > 150:
+                    score += 1
+                if width_unit in ['%','vh','vmin','vmax'] and width_value >30:
+                    score += 1
+            if image_size > 10000:
+                score += 1
+            if img.get('alt') != '':
+                score+=1
+            if any(image_format==format for format in ['jpg','png','webp']):
+                score+=1
+            if index/images_count<0.5:
+                score+=1
+            return score
 
-            if not is_valid_image(img, img.parent, img.parent.get('class', [])):
-                return None
-            score = score_image_for_usefulness(img, url, index, total_images)
-            if score <= IMAGE_SCORE_THRESHOLD:
-                return None
-            return {
-                'src': img.get('src', ''),
-                'alt': img.get('alt', ''),
-                'desc': find_closest_parent_with_useful_text(img),
-                'score': score,
-                'type': 'image'
-            }
+        if not is_valid_image(img, img.parent, img.parent.get('class', [])):
+            return None
+        score = score_image_for_usefulness(img, url, index, total_images)
+        if score <= IMAGE_SCORE_THRESHOLD:
+            return None
+        return {
+            'src': img.get('src', '').replace('\\"', '"').strip(),
+            'alt': img.get('alt', ''),
+            'desc': find_closest_parent_with_useful_text(img),
+            'score': score,
+            'type': 'image'
+        }
 
     def process_element(element: element.PageElement) -> bool:
         try:
@@ -690,10 +706,13 @@ def get_content_of_website_optimized(url: str, html: str, word_count_threshold: 
     body = flatten_nested_elements(body)
     base64_pattern = re.compile(r'data:image/[^;]+;base64,([^"]+)')
     for img in imgs:
-        src = img.get('src', '')
-        if base64_pattern.match(src):
-            # Replace base64 data with empty string
-            img['src'] = base64_pattern.sub('', src)
+        try:
+            src = img.get('src', '')
+            if base64_pattern.match(src):
+                img['src'] = base64_pattern.sub('', src)
+        except:
+            pass        
+
     cleaned_html = str(body).replace('\n\n', '\n').replace('  ', ' ')
     cleaned_html = sanitize_html(cleaned_html)
 
@@ -775,7 +794,14 @@ def extract_xml_data(tags, string):
     return data
     
 # Function to perform the completion with exponential backoff
-def perform_completion_with_backoff(provider, prompt_with_variables, api_token, json_response = False, base_url=None):
+def perform_completion_with_backoff(
+    provider, 
+    prompt_with_variables, 
+    api_token, 
+    json_response = False, 
+    base_url=None,
+    **kwargs
+    ):
     from litellm import completion 
     from litellm.exceptions import RateLimitError
     max_attempts = 3
@@ -784,6 +810,9 @@ def perform_completion_with_backoff(provider, prompt_with_variables, api_token, 
     extra_args = {}
     if json_response:
         extra_args["response_format"] = { "type": "json_object" }
+        
+    if kwargs.get("extra_args"):
+        extra_args.update(kwargs["extra_args"])
     
     for attempt in range(max_attempts):
         try:
@@ -954,4 +983,66 @@ def format_html(html_string):
     soup = BeautifulSoup(html_string, 'html.parser')
     return soup.prettify()
 
+def normalize_url(href, base_url):
+    """Normalize URLs to ensure consistent format"""
+    from urllib.parse import urljoin, urlparse
 
+    # Parse base URL to get components
+    parsed_base = urlparse(base_url)
+    if not parsed_base.scheme or not parsed_base.netloc:
+        raise ValueError(f"Invalid base URL format: {base_url}")
+
+    # Use urljoin to handle all cases
+    normalized = urljoin(base_url, href.strip())
+    return normalized
+
+def normalize_url_tmp(href, base_url):
+    """Normalize URLs to ensure consistent format"""
+    # Extract protocol and domain from base URL
+    try:
+        base_parts = base_url.split('/')
+        protocol = base_parts[0]
+        domain = base_parts[2]
+    except IndexError:
+        raise ValueError(f"Invalid base URL format: {base_url}")
+    
+    # Handle special protocols
+    special_protocols = {'mailto:', 'tel:', 'ftp:', 'file:', 'data:', 'javascript:'}
+    if any(href.lower().startswith(proto) for proto in special_protocols):
+        return href.strip()
+        
+    # Handle anchor links
+    if href.startswith('#'):
+        return f"{base_url}{href}"
+        
+    # Handle protocol-relative URLs
+    if href.startswith('//'):
+        return f"{protocol}{href}"
+        
+    # Handle root-relative URLs
+    if href.startswith('/'):
+        return f"{protocol}//{domain}{href}"
+        
+    # Handle relative URLs
+    if not href.startswith(('http://', 'https://')):
+        # Remove leading './' if present
+        href = href.lstrip('./')
+        return f"{protocol}//{domain}/{href}"
+        
+    return href.strip()
+
+def is_external_url(url, base_domain):
+    """Determine if a URL is external"""
+    special_protocols = {'mailto:', 'tel:', 'ftp:', 'file:', 'data:', 'javascript:'}
+    if any(url.lower().startswith(proto) for proto in special_protocols):
+        return True
+        
+    try:
+        # Handle URLs with protocol
+        if url.startswith(('http://', 'https://')):
+            url_domain = url.split('/')[2]
+            return base_domain.lower() not in url_domain.lower()
+    except IndexError:
+        return False
+        
+    return False

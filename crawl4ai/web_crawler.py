@@ -12,6 +12,7 @@ from typing import List
 from concurrent.futures import ThreadPoolExecutor
 from .config import *
 import warnings
+import json
 warnings.filterwarnings("ignore", message='Field "model_name" has conflict with protected namespace "model_".')
 
 
@@ -19,7 +20,7 @@ class WebCrawler:
     def __init__(self, crawler_strategy: CrawlerStrategy = None, always_by_pass_cache: bool = False, verbose: bool = False):
         self.crawler_strategy = crawler_strategy or LocalSeleniumCrawlerStrategy(verbose=verbose)
         self.always_by_pass_cache = always_by_pass_cache
-        self.crawl4ai_folder = os.path.join(Path.home(), ".crawl4ai")
+        self.crawl4ai_folder = os.path.join(os.getenv("CRAWL4_AI_BASE_DIRECTORY", Path.home()), ".crawl4ai")
         os.makedirs(self.crawl4ai_folder, exist_ok=True)
         os.makedirs(f"{self.crawl4ai_folder}/cache", exist_ok=True)
         init_db()
